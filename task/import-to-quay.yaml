@@ -151,9 +151,12 @@ spec:
         done
 
         echo "Decompressing found archives"
-        for tarball in *.tar* *.tg* ; do
-          tar -vxf "$tarball"
-        done
+        ( # limit the scope of nullglob
+          shopt -s nullglob
+          for tarball in *.tar* *.tg* ; do
+            tar -vxf "$tarball"
+          done
+        )
         #unzip ./*.zip &>/dev/null # missing in mock image
         true
     - name: run-syft

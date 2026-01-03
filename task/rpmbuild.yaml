@@ -48,6 +48,12 @@ spec:
         Name of specfile when specfile doesn't have the same prefix name as package name.
         Default is null and package-name.spec is used.
       type: string
+    - name: build-number
+      description: |
+        Build number for FESCo 3501 %buildrelease support. Empty for first build
+        of an NVR (no suffix), "1" for first rebuild (+build1), etc.
+      type: string
+      default: ""
   results:
     - name: rpmbuild-artifact
       description: The Trusted Artifact URI pointing to the artifact with the result of the build.
@@ -159,6 +165,13 @@ spec:
           specfile_name="${specfile_prefix}.spec"
         fi
 
+        # Build the mock command with optional buildnumber macro (FESCo 3501)
+        mock_define_args=""
+        if [ -n "$(params.build-number)" ]; then
+          mock_define_args="--define 'buildnumber $(params.build-number)'"
+          echo "Using build number: $(params.build-number)"
+        fi
+
         success=true
         if "$(params.hermetic)"; then
           # Give mockbuilder rights to consume buildroot.
@@ -172,6 +185,7 @@ spec:
               mock --hermetic-build \
                   /buildroot/results/buildroot_lock.json \
                   /buildroot/results/buildroot_repo \
+                  $mock_define_args \
                   --spec /source/$specfile_name \
                   --sources /source --resultdir /results \
           || success=false
@@ -182,6 +196,7 @@ spec:
           remote_cmd podman run -v "$HOMEDIR/mock.cfg:/mock.cfg" \
                                 "${podman_params[@]}" \
               mock -r /mock.cfg \
+                  $mock_define_args \
                   --spec /source/$specfile_name \
                   --sources /source --resultdir /results \
           || success=false

@@ -49,6 +49,12 @@ spec:
     - description: RPM Build environment OCI image to run scripts in
       name: script-environment-image
       type: string
+    - name: build-number
+      description: |
+        Build number for FESCo 3501 %buildrelease support. Empty for first build
+        of an NVR (no suffix), "1" for first rebuild (+build1), etc.
+      type: string
+      default: ""
   results:
     - name: IMAGE_URL
       description: Location of build artifact
@@ -111,10 +117,30 @@ spec:
 
         # Get NVR from any SRPM
         NVR=$(<nvr.log)
-        IMAGE_URL="$(params.ociStorage).nvr-$NVR"
+
+        # Normalize NVR for OCI compatibility (tildes and plus signs are not allowed in tags)
+        NVR_NORMALIZED="${NVR//\~/_}"
+        NVR_NORMALIZED="${NVR_NORMALIZED//+/_}"
+
+        # Extract pipeline run name for unique tag suffix (prevents tag collisions)
+        # pipelinerun-id is "namespace/name", we want just the name part
+        PIPELINERUN_NAME="$(params.pipelinerun-id)"
+        PIPELINERUN_NAME="${PIPELINERUN_NAME##*/}"
+
+        # Create unique tag: nvr-<NVR>.<pipelinerun-name>
+        # This ensures each build gets a unique tag, preventing collisions
+        # that could orphan release markers
+        IMAGE_URL="$(params.ociStorage).nvr-${NVR_NORMALIZED}.${PIPELINERUN_NAME}"
 
         echo "Selecting auth for $IMAGE_URL"
         select-oci-auth $IMAGE_URL > $HOME/auth.json
+
+        # Build annotation args, including buildnumber if set (FESCo 3501)
+        ANNOTATION_ARGS="--annotation quay.expires-after=14d"
+        if [ -n "$(params.build-number)" ]; then
+          ANNOTATION_ARGS="$ANNOTATION_ARGS --annotation io.konflux.rpm.buildnumber=$(params.build-number)"
+          echo "Adding buildnumber annotation: $(params.build-number)"
+        fi
 
         echo "Pushing to: $IMAGE_URL"
         cd oras-staging
@@ -122,7 +148,7 @@ spec:
         oras push \
              --registry-config "$HOME/auth.json" \
              --artifact-type application/vnd.rpm.build.v0 \
-             --annotation quay.expires-after=14d \
+             $ANNOTATION_ARGS \
              $IMAGE_URL \
              `cat ../oras-push-list.txt` | tee /tmp/oras.log
 

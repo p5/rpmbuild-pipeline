@@ -142,6 +142,15 @@ spec:
       default: 'false'
       description: Enable cache proxy configuration
       type: string
+    - name: enable-buildrelease
+      default: 'false'
+      description: |
+        Enable FESCo 3501 buildrelease support for automated mass rebuilds.
+        When true, queries the registry for existing builds of the same NVR
+        and assigns a build number (+build1, +build2, etc.) for rebuilds.
+        Leave as false for regular builds (PRs, merges). Only set to true
+        when triggering automated reverse-dependency rebuilds.
+      type: string
   results:
     - description: ""
       name: CHAINS-GIT_URL
@@ -289,10 +298,37 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: build-platforms
           value: ["$(params.build-platforms[*])"]
+    - name: determine-build-number
+      retries: 3
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.self-ref-url)
+          - name: revision
+            value: $(params.self-ref-revision)
+          - name: pathInRepo
+            value: task/determine-build-number.yaml
+      runAfter:
+        - process-sources
+      params:
+        - name: package-name
+          value: $(params.package-name)
+        - name: specfile
+          value: $(params.specfile)
+        - name: source-artifact
+          value: $(tasks.process-sources.results.dependencies-artifact)
+        - name: ociStorage
+          value: $(params.ociStorage)
+        - name: script-environment-image
+          value: $(params.script-environment-image)
+        - name: enable-buildrelease
+          value: $(params.enable-buildrelease)
     - name: calculate-deps-x86-64
       runAfter:
         - process-sources
         - prepare-mock-config
+        - determine-build-number
       params:
         - name: package-name
           value: $(params.package-name)
@@ -312,6 +348,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -348,6 +386,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -361,6 +401,7 @@ spec:
       runAfter:
         - process-sources
         - prepare-mock-config
+        - determine-build-number
       params:
         - name: package-name
           value: $(params.package-name)
@@ -380,6 +421,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -416,6 +459,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -429,6 +474,7 @@ spec:
       runAfter:
         - process-sources
         - prepare-mock-config
+        - determine-build-number
       params:
         - name: package-name
           value: $(params.package-name)
@@ -448,6 +494,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -484,6 +532,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -497,6 +547,7 @@ spec:
       runAfter:
         - process-sources
         - prepare-mock-config
+        - determine-build-number
       params:
         - name: package-name
           value: $(params.package-name)
@@ -516,6 +567,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -552,6 +605,8 @@ spec:
           value: $(params.ociArtifactExpiresAfter)
         - name: specfile
           value: $(params.specfile)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       taskRef:
         resolver: git
         params:
@@ -585,6 +640,8 @@ spec:
           value: $(tasks.rpmbuild-ppc64le.results.rpmbuild-artifact)
         - name: script-environment-image
           value: $(params.script-environment-image)
+        - name: build-number
+          value: $(tasks.determine-build-number.results.build-number)
       runAfter:
         - rpmbuild-s390x
         - rpmbuild-x86-64

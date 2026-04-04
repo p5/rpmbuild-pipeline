@@ -270,17 +270,22 @@ spec:
 
         client = httpx.Client(auth=auth, timeout=60)
 
-        def wait_task(task_href):
+        def wait_task(task_href, ignore_duplicate=False):
             """Wait for an async Pulp task to complete."""
             url = f"{base_url}{task_href}" if task_href.startswith("/") else task_href
             for _ in range(60):
                 r = client.get(url)
                 r.raise_for_status()
-                state = r.json()["state"]
+                data = r.json()
+                state = data["state"]
                 if state == "completed":
-                    return r.json()
+                    return data
                 if state == "failed":
-                    print(f"Task failed: {r.json()}", file=sys.stderr)
+                    err = data.get("error", {})
+                    if ignore_duplicate and err.get("error_code") == "PLP0022":
+                        print("  (duplicate content already in repo, ignoring)")
+                        return data
+                    print(f"Task failed: {data}", file=sys.stderr)
                     sys.exit(1)
                 time.sleep(2)
             print("Task timed out", file=sys.stderr)
@@ -372,7 +377,7 @@ spec:
         r.raise_for_status()
         resp = r.json()
         if "task" in resp:
-            wait_task(resp["task"])
+            wait_task(resp["task"], ignore_duplicate=True)
 
         print(f"Successfully copied {len(content_hrefs)} RPMs to side tag '{SIDE_TAG}'")
       volumeMounts:

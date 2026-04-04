@@ -31,6 +31,14 @@ spec:
     - name: ociArtifactExpiresAfter
       description: How long Trusted Artifacts should be retained
       type: string
+    - name: side-tag-repo-url
+      description: >
+        DNF baseurl for a Pulp side tag distribution.  When non-empty, an
+        extra yum/dnf repo pointing at this URL is added to the Mock config
+        with highest priority so that packages already in the side tag are
+        preferred during dependency resolution.
+      type: string
+      default: ""
   results:
     - name: mock-config-template-file
       description: Mock configuration template file (trusted-artifact, string content)
@@ -67,6 +75,32 @@ spec:
           include("/etc/mock/$(params.chroot).cfg")
         EOF
         fi
+
+        # If a side tag repo URL is provided, inject it as an extra repo in
+        # the Mock config so packages from the side tag are available as
+        # build dependencies.  Priority 1 ensures these packages are
+        # preferred over the base distribution repos.
+        #
+        # NOTE: No credentials are embedded here.  The build tasks
+        # (calculate-deps, rpmbuild) inject auth via a separate repo file
+        # from the pulp-access secret at build time, keeping
+        # credentials out of trusted artifacts.
+        SIDE_TAG_REPO_URL="$(params.side-tag-repo-url)"
+        if [ -n "$SIDE_TAG_REPO_URL" ]; then
+          cat >> "$mock_config_template" <<SIDETAG_EOF
+
+        config_opts['yum.conf'] += """
+        [side-tag]
+        name=Side Tag Repository
+        baseurl=$SIDE_TAG_REPO_URL
+        enabled=1
+        gpgcheck=0
+        priority=1
+        """
+        SIDETAG_EOF
+          echo "Injected side tag repo: $SIDE_TAG_REPO_URL"
+        fi
+
         # present the file in logs
         cat "$mock_config_template"
     - name: create-trusted-artifact-mock-config

@@ -51,6 +51,13 @@ spec:
         Name of specfile when specfile doesn't have the same prefix name as package name.
         Default is null and package-name.spec is used.
       type: string
+    - name: side-tag-repo-url
+      description: >
+        DNF baseurl for the side tag's Pulp distribution.  When non-empty,
+        content access credentials from the pulp-access secret are
+        injected into the Mock config on the remote build VM.
+      type: string
+      default: ""
   results:
     - name: rpmbuild-artifact
       description: The Trusted Artifact URI pointing to the artifact with the result of the build.
@@ -179,6 +186,26 @@ spec:
           fi
           # Instantiate the given Mock config template for our architecture.
           sed "s|@ARCH@|$mock_arch|" "$workdir/mock-config/mock.cfg" > "$workdir/mock.cfg"
+
+          # Inject Pulp content credentials if available (non-hermetic only).
+          # Hermetic builds use the lockfile from calculate-deps which already
+          # resolved all packages, so no credentials are needed.
+          if [ -f /pulp-access/cli.toml ]; then
+            CONTENT_USER=$(grep -oP '^\s*username\s*=\s*"\K[^"]+' /pulp-access/cli.toml || true)
+            CONTENT_PASS=$(grep -oP '^\s*password\s*=\s*"\K[^"]+' /pulp-access/cli.toml || true)
+            if [ -n "$CONTENT_USER" ] && [ -n "$CONTENT_PASS" ]; then
+              cat >> "$workdir/mock.cfg" <<AUTHEOF
+
+          config_opts['yum.conf'] += """
+          [side-tag]
+          username=$CONTENT_USER
+          password=$CONTENT_PASS
+          """
+          AUTHEOF
+              echo "Injected Pulp content credentials into Mock config"
+            fi
+          fi
+
           send "$workdir/mock.cfg" "$HOMEDIR/mock.cfg"
           remote_cmd podman run -v "$HOMEDIR/mock.cfg:/mock.cfg" \
                                 "${podman_params[@]}" \
@@ -227,6 +254,9 @@ spec:
         - mountPath: /ssh
           name: ssh
           readOnly: true
+        - mountPath: /pulp-access
+          name: pulp-access-credentials
+          readOnly: true
     - name: create-trusted-artifact
       image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:0388f83b0a0f02e1b814f62e660a68c56f283fe3092371d00bf5ce743f53be2f
       args:
@@ -242,5 +272,9 @@ spec:
       secret:
         optional: false
         secretName: multi-platform-ssh-$(context.taskRun.name)
+    - name: pulp-access-credentials
+      secret:
+        optional: true
+        secretName: pulp-access
     - name: workdir
       emptyDir: {}

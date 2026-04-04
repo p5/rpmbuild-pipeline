@@ -23,7 +23,8 @@ Pipeline.
 graph TD
 
   clone_repository[clone-repository] --> get_sources[process-sources]
-  clone_repository[clone-repository] --> prepare_mock_config[prepare-mock-config]
+  clone_repository[clone-repository] --> validate_side_tag[validate-side-tag]
+  validate_side_tag --> prepare_mock_config[prepare-mock-config]
 
   get_sources --> nosrpm_a[calculate-deps-x86_64]:::ARCH
   get_sources --> nosrpm_b[calculate-deps-aarch64]:::ARCH
@@ -48,6 +49,7 @@ graph TD
   build_a --> Upload[upload-to-quay]
   build_b --> Upload
   build_c --> Upload
+  validate_side_tag --> Upload
 
   Upload --> check_noarch[check-noarch]
 
@@ -80,6 +82,16 @@ using [MPC][].
     - Any additional code pre-processing must happen here, under *our control*
       (not user's), e.g., we expand rpmautospec `%autorelease` and
       `%autochangelog` templates here.
+- **validate-side-tag**
+    - Validates that the target Pulp RPM repository (side tag) exists and is
+      accessible.  When no side tag is specified (default), this task is a no-op.
+    - Runs in parallel with `process-sources` — adds minimal latency since it's
+      just a Pulp API call.
+    - Outputs the side tag's DNF repository URL, which is passed to
+      `prepare-mock-config` so that packages already in the side tag are
+      available as build dependencies.
+    - If a side tag is specified but Pulp credentials are missing, the pipeline
+      fails early.
 - **prepare-mock-config**
     - Given the input parameters and the source directory (some use cases allow
       the Pipeline to read the Mock config file from cloned sources), generate a
@@ -113,6 +125,10 @@ using [MPC][].
       In the secert will need to be a file called oauth-cli.toml. This will need to contain
       the pulp config toml. It accepts either certs or oauth. If using certs to do
       authentication, the certs will need to be included in the secret.
+    - When a `side-tag` parameter is provided, the Pulp upload targets that
+      specific Pulp RPM repository instead of the default.  Pulp credentials
+      become mandatory in this case.  Multiple pipeline runs can upload into
+      the same side tag for coordinated multi-package updates.
 - **check-noarch**
     - Verifies that all noarch (sub-)packages from the architecture-specific
       builds are identical.  If they are not, the step fails the pipeline.

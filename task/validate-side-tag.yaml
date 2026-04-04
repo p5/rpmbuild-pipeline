@@ -1,0 +1,69 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: rpm-build
+  name: validate-side-tag
+spec:
+  description: >
+    Validates that the target Pulp RPM repository (side tag) exists and is
+    accessible before the build proceeds.  When no side tag is specified,
+    this task is a no-op.
+  params:
+    - name: side-tag
+      description: >
+        Name of a Pulp RPM repository (side tag) to validate.
+        When empty, validation is skipped.
+      type: string
+      default: ""
+  results:
+    - name: side-tag-validated
+      description: '"true" if a side tag was validated, "false" if skipped'
+    - name: side-tag-repo-url
+      description: >
+        DNF baseurl for the side tag's Pulp distribution.  Empty when no side
+        tag is specified.  Used by prepare-mock-config to inject the side tag
+        as an extra repo so builds can use packages already in the side tag.
+  steps:
+    - name: validate
+      image: quay.io/redhat-user-workloads/artifact-storage-tenant/tooling/pulp-tool-container:latest@sha256:583e721a97c0d24b5d71eb23e2a0dc5f1622ebacc63a9a8ab0fb702780f21bbd
+      script: |
+        #!/usr/bin/env bash
+        set -e
+
+        SIDE_TAG="$(params.side-tag)"
+
+        if [ -z "$SIDE_TAG" ]; then
+          echo "No side tag specified, skipping validation"
+          echo -n "false" > "$(results.side-tag-validated.path)"
+          echo -n "" > "$(results.side-tag-repo-url.path)"
+          exit 0
+        fi
+
+        echo "Validating side tag repository: $SIDE_TAG"
+
+        if [ ! -f /pulp-access/cli.toml ]; then
+          echo "ERROR: side-tag '$SIDE_TAG' specified but no Pulp credentials found (pulp-access secret missing)"
+          exit 1
+        fi
+
+        # Validate the repository and retrieve its distribution URL so it can
+        # be used as a DNF repo during the build.
+        REPO_URL=$(pulp-tool --config /pulp-access/cli.toml \
+          validate-repo --name "$SIDE_TAG" --show-repo-url)
+
+        echo "Side tag repository '$SIDE_TAG' validated successfully"
+        echo "Distribution URL: $REPO_URL"
+        echo -n "true" > "$(results.side-tag-validated.path)"
+        echo -n "$REPO_URL" > "$(results.side-tag-repo-url.path)"
+      volumeMounts:
+        - mountPath: /pulp-access
+          readOnly: true
+          name: pulp-access-credentials
+  volumes:
+    - name: pulp-access-credentials
+      secret:
+        optional: true
+        secretName: pulp-access

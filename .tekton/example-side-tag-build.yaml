@@ -1,0 +1,54 @@
+---
+# yamllint disable rule:line-length
+# Example PipelineRun demonstrating side tag usage.
+# The side-tag parameter specifies a Pulp RPM repository name that must
+# already exist.  Built RPMs will be uploaded into that repository in
+# addition to the standard Quay/OCI upload.
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: example-side-tag-build
+  annotations:
+    build.appstudio.openshift.io/repo: "https://src.fedoraproject.org/rpms/example-package?rev={{revision}}"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: |
+      event == "push" && target_branch == "main"
+  labels:
+    appstudio.openshift.io/application: rpms
+    appstudio.openshift.io/component: example-package
+    pipelines.appstudio.openshift.io/type: build
+spec:
+  params:
+    - name: package-name
+      value: example-package
+    - name: git-url
+      value: "https://src.fedoraproject.org/rpms/example-package.git"
+    - name: revision
+      value: "main"
+    - name: target-branch
+      value: "main"
+    - name: side-tag
+      value: "sidetag-my-update"
+    - name: hermetic
+      value: "true"
+    - name: build-architectures
+      value:
+        - x86_64
+        - aarch64
+    - name: build-platforms
+      value:
+        - linux/amd64
+        - linux/arm64
+  pipelineRef:
+    resolver: git
+    params:
+      - name: url
+        value: "https://github.com/hummingbird-org/rpmbuild-pipeline.git"
+      - name: revision
+        value: "main"
+      - name: pathInRepo
+        value: pipeline/build-rpm-package.yaml
+  workspaces:
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'

@@ -18,6 +18,7 @@ Below is the set of supported parameters accepted by the pipeline.
 | mock-config-template-filename-in-sources | If Mock Config template exists within source directory, specify where. | ""                                  |
 | ociArtifactExpiresAfter | How long Trusted Artifacts should be retained                                    | 14d                                 |
 | target-distribution | Target distribution. The pipeline expands spec file using macros from the target distribution. Typically specified as ID-VERSION_ID (see /etc/os-release), e.g., rhel-11 | fedora-rawhide                      |
+| side-tag            | Name of a Pulp RPM repository (side tag) to upload built RPMs into. When empty, default Pulp upload behavior is used. The repository must already exist. Multiple pipeline runs can target the same side tag for coordinated multi-package updates. | ""                                  |
 
 ## Parametrizing timeouts
 

@@ -52,6 +52,10 @@ spec:
     - description: RPM Build environment OCI image to run scripts in
       name: script-environment-image
       type: string
+    - name: side-tag
+      description: Pulp RPM repository name (side tag) to upload into
+      type: string
+      default: ""
   results:
     - name: IMAGE_URL
       description: Location of build artifact
@@ -214,7 +218,18 @@ spec:
         : > "$(results.PULP-IMAGE_URL.path)"
         : > "$(results.PULP-IMAGE_DIGEST.path)"
 
+        # When a side tag is specified, Pulp credentials are mandatory
+        if [ -n "$(params.side-tag)" ] && [ ! -f /pulp-access/cli.toml ]; then
+          echo "ERROR: side-tag '$(params.side-tag)' specified but no Pulp credentials found"
+          exit 1
+        fi
+
         if [ -f /pulp-access/cli.toml ]; then
+          EXTRA_ARGS=()
+          if [ -n "$(params.side-tag)" ]; then
+            EXTRA_ARGS=(--repository "$(params.side-tag)")
+          fi
+
           pulp-tool --config /pulp-access/cli.toml \
             --build-id "$(params.pipelinerun-id)" \
             --namespace "$(context.taskRun.namespace)" \
@@ -222,7 +237,8 @@ spec:
             --parent-package "$(params.package-name)" \
             --rpm-path "/var/workdir/results" \
             --sbom-path "/var/workdir/results/oras-staging/sbom-merged.json" \
-            --artifact-results "$(results.PULP-IMAGE_URL.path)","$(results.PULP-IMAGE_DIGEST.path)"
+            --artifact-results "$(results.PULP-IMAGE_URL.path)","$(results.PULP-IMAGE_DIGEST.path)" \
+            "${EXTRA_ARGS[@]}"
         else
           echo "Pulp config file does not exist; skipping push and writing empty Pulp result files"
         fi

@@ -92,7 +92,7 @@ spec:
         Testing-only.  This must be filled as parameter in tests so we can point
         at the Tasks for the same git-revision.
       type: string
-      default: "https://github.com/hummingbird-org/rpmbuild-pipeline.git"
+      default: "https://github.com/p5/rpmbuild-pipeline.git"
     - name: self-ref-revision
       description: |
         Testing-only.  This must be filled as parameter in tests so we can point

@@ -187,10 +187,11 @@ spec:
           # Instantiate the given Mock config template for our architecture.
           sed "s|@ARCH@|$mock_arch|" "$workdir/mock-config/mock.cfg" > "$workdir/mock.cfg"
 
-          # Inject Pulp content credentials if available (non-hermetic only).
-          # Hermetic builds use the lockfile from calculate-deps which already
-          # resolved all packages, so no credentials are needed.
-          if [ -f /pulp-access/cli.toml ]; then
+          # Inject Pulp content credentials if a side tag repo URL was
+          # injected into the mock config. Only needed when there's an actual
+          # side tag repo to authenticate against.
+          SIDE_TAG_URL="$(params.side-tag-repo-url)"
+          if [ -n "$SIDE_TAG_URL" ] && [ -f /pulp-access/cli.toml ]; then
             CONTENT_USER=$(grep -oP '^\s*username\s*=\s*"\K[^"]+' /pulp-access/cli.toml || true)
             CONTENT_PASS=$(grep -oP '^\s*password\s*=\s*"\K[^"]+' /pulp-access/cli.toml || true)
             if [ -n "$CONTENT_USER" ] && [ -n "$CONTENT_PASS" ]; then
@@ -202,7 +203,7 @@ spec:
           password=$CONTENT_PASS
           """
           AUTHEOF
-              echo "Injected Pulp content credentials into Mock config"
+              echo "Injected Pulp content credentials into Mock config for side tag"
             fi
           fi
 

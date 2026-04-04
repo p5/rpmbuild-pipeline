@@ -322,19 +322,28 @@ spec:
 
         print(f"  {len(seen_sha256)} unique RPMs (deduplicated from {len(rpm_files)} files)")
 
-        # Find or create content units for each unique RPM
-        content_hrefs = set()
+        # Find content units for each unique RPM, deduplicating by NEVRA
+        # (name-epoch-version-release-arch) to avoid Pulp PLP0022 errors.
+        content_hrefs = {}  # NEVRA -> href (keeps last one per NEVRA)
         for sha256, rpm_file in seen_sha256.items():
             basename = os.path.basename(rpm_file)
 
             # Find existing content unit by SHA256
-            r = client.get(f"{api}/content/rpm/packages/", params={"sha256": sha256})
+            r = client.get(f"{api}/content/rpm/packages/", params={
+                "sha256": sha256,
+                "fields": "pulp_href,name,epoch,version,release,arch",
+            })
             r.raise_for_status()
             existing_content = r.json()["results"]
 
             if existing_content:
-                content_hrefs.add(existing_content[0]["pulp_href"])
-                print(f"  Found: {basename}")
+                pkg = existing_content[0]
+                nevra = f"{pkg['name']}-{pkg['epoch']}:{pkg['version']}-{pkg['release']}.{pkg['arch']}"
+                if nevra not in content_hrefs:
+                    content_hrefs[nevra] = pkg["pulp_href"]
+                    print(f"  Found: {basename} ({nevra})")
+                else:
+                    print(f"  Skip duplicate NEVRA: {basename}")
             else:
                 # Need to upload artifact first
                 r_art = client.get(f"{api}/artifacts/", params={"sha256": sha256})
@@ -355,22 +364,30 @@ spec:
                 })
                 r.raise_for_status()
                 resp = r.json()
+                href = None
                 if "task" in resp:
                     task = wait_task(resp["task"])
                     for resource in task.get("created_resources", []):
                         if "/content/rpm/packages/" in resource:
-                            content_hrefs.add(resource)
+                            href = resource
                 elif "pulp_href" in resp:
-                    content_hrefs.add(resp["pulp_href"])
+                    href = resp["pulp_href"]
+                if href:
+                    # Fetch NEVRA for dedup
+                    r2 = client.get(f"{base_url}{href}", params={"fields": "name,epoch,version,release,arch"})
+                    r2.raise_for_status()
+                    pkg = r2.json()
+                    nevra = f"{pkg['name']}-{pkg['epoch']}:{pkg['version']}-{pkg['release']}.{pkg['arch']}"
+                    content_hrefs[nevra] = href
                 print(f"  Created: {basename}")
 
         if not content_hrefs:
             print("No content units created, skipping modify")
             sys.exit(0)
 
-        # Add all unique content units to the side tag repo
-        content_list = sorted(content_hrefs)
-        print(f"Adding {len(content_list)} unique content units to side tag '{SIDE_TAG}'")
+        # Add all unique content units to the side tag repo (one per NEVRA)
+        content_list = sorted(content_hrefs.values())
+        print(f"Adding {len(content_list)} unique content units ({len(content_hrefs)} NEVRAs) to side tag '{SIDE_TAG}'")
         r = client.post(f"{base_url}{sidetag_repo_href}modify/", json={
             "add_content_units": content_list,
         })

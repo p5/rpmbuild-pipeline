@@ -218,30 +218,37 @@ spec:
         : > "$(results.PULP-IMAGE_URL.path)"
         : > "$(results.PULP-IMAGE_DIGEST.path)"
 
-        # When a side tag is specified, Pulp credentials are mandatory
-        if [ -n "$(params.side-tag)" ] && [ ! -f /pulp-access/cli.toml ]; then
-          echo "ERROR: side-tag '$(params.side-tag)' specified but no Pulp credentials found"
-          exit 1
-        fi
-
-        if [ -f /pulp-access/cli.toml ]; then
-          EXTRA_ARGS=()
-          if [ -n "$(params.side-tag)" ]; then
-            EXTRA_ARGS=(--repository "$(params.side-tag)")
-          fi
-
-          pulp-tool --config /pulp-access/cli.toml \
-            --build-id "$(params.pipelinerun-id)" \
-            --namespace "$(context.taskRun.namespace)" \
-            upload \
-            --parent-package "$(params.package-name)" \
-            --rpm-path "/var/workdir/results" \
-            --sbom-path "/var/workdir/results/oras-staging/sbom-merged.json" \
-            --artifact-results "$(results.PULP-IMAGE_URL.path)","$(results.PULP-IMAGE_DIGEST.path)" \
-            "${EXTRA_ARGS[@]}"
-        else
+        if [ ! -f /pulp-access/cli.toml ]; then
           echo "Pulp config file does not exist; skipping push and writing empty Pulp result files"
+          exit 0
         fi
+
+        # Upload RPMs to Pulp. Side tag repository targeting requires a
+        # pulp-tool version with --repository support; when unavailable
+        # the upload goes to the default repository.
+        UPLOAD_ARGS=(
+          --parent-package "$(params.package-name)"
+          --rpm-path "/var/workdir/results"
+          --sbom-path "/var/workdir/results/oras-staging/sbom-merged.json"
+          --artifact-results "$(results.PULP-IMAGE_URL.path)","$(results.PULP-IMAGE_DIGEST.path)"
+        )
+
+        SIDE_TAG="$(params.side-tag)"
+
+        # Check if pulp-tool supports --repository
+        if [ -n "$SIDE_TAG" ] && pulp-tool upload --help 2>&1 | grep -q -- '--repository'; then
+          UPLOAD_ARGS+=(--repository "$SIDE_TAG")
+          echo "Uploading RPMs to side tag repository: $SIDE_TAG"
+        elif [ -n "$SIDE_TAG" ]; then
+          echo "WARNING: pulp-tool does not support --repository, uploading to default repo"
+          echo "Side tag '$SIDE_TAG' will not receive RPMs from this build"
+        fi
+
+        pulp-tool --config /pulp-access/cli.toml \
+          --build-id "$(params.pipelinerun-id)" \
+          --namespace "$(context.taskRun.namespace)" \
+          upload \
+          "${UPLOAD_ARGS[@]}"
       volumeMounts:
         - mountPath: /pulp-access
           readOnly: true

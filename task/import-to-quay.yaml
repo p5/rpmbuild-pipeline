@@ -148,16 +148,8 @@ spec:
       script: |
         #!/usr/bin/env bash
 
-        # TODO(praiskup): RPM build code shouldn't be responsible for code
-        # scanning.  This heuristic for "best effort" archive extraction is
-        # incomplete and brittle (hence very risky), and should ideally be part
-        # of the Syft tooling (which likely performs all kinds of other
-        # heuristics, in a legitimate way).
-
         export PS4='+ $(date "+%Y-%m-%d %H:%M:%S") '
         set -x
-        # expects to parse all srpm files in /mnt
-        # writes output to /mnt/syft-sbom.json
         SRCDIR=$(pwd)
         TMPDIR=./syft-extracted
         mkdir $TMPDIR
@@ -181,7 +173,6 @@ spec:
             tar -vxf "$tarball"
           done
         )
-        #unzip ./*.zip &>/dev/null # missing in mock image
         true archive explosion finished
     - name: run-syft
       image: registry.access.redhat.com/rh-syft-tech-preview/syft-rhel9:1.29.0@sha256:dc0da6b4448428e625271b542cc029ab03de92f75ea50d6d63b1d088d20bbd28
@@ -195,7 +186,6 @@ spec:
         #!/bin/bash
         export PS4='+ $(date "+%Y-%m-%d %H:%M:%S") '
         set -x
-        # list dirs
         find . | sort
         ARGS=(--rpm-dir . --syft-sbom syft-sbom.json --sbom-merged sbom-merged.json)
         if [ -f ancestors.json ]; then
@@ -210,7 +200,7 @@ spec:
       script: |
         #!/usr/bin/env bash
         jq . sbom-merged.json
-    - name: push-to-pulp-select-auth
+    - name: push-to-pulp
       image: quay.io/redhat-user-workloads/artifact-storage-tenant/tooling/pulp-tool-container:latest@sha256:583e721a97c0d24b5d71eb23e2a0dc5f1622ebacc63a9a8ab0fb702780f21bbd
       script: |
         #!/usr/bin/env bash
@@ -223,32 +213,161 @@ spec:
           exit 0
         fi
 
-        # Upload RPMs to Pulp. Side tag repository targeting requires a
-        # pulp-tool version with --repository support; when unavailable
-        # the upload goes to the default repository.
-        UPLOAD_ARGS=(
-          --parent-package "$(params.package-name)"
-          --rpm-path "/var/workdir/results"
-          --sbom-path "/var/workdir/results/oras-staging/sbom-merged.json"
-          --artifact-results "$(results.PULP-IMAGE_URL.path)","$(results.PULP-IMAGE_DIGEST.path)"
-        )
-
-        SIDE_TAG="$(params.side-tag)"
-
-        # Check if pulp-tool supports --repository
-        if [ -n "$SIDE_TAG" ] && pulp-tool upload --help 2>&1 | grep -q -- '--repository'; then
-          UPLOAD_ARGS+=(--repository "$SIDE_TAG")
-          echo "Uploading RPMs to side tag repository: $SIDE_TAG"
-        elif [ -n "$SIDE_TAG" ]; then
-          echo "WARNING: pulp-tool does not support --repository, uploading to default repo"
-          echo "Side tag '$SIDE_TAG' will not receive RPMs from this build"
-        fi
-
+        # Standard upload to build-scoped Pulp repos
         pulp-tool --config /pulp-access/cli.toml \
           --build-id "$(params.pipelinerun-id)" \
           --namespace "$(context.taskRun.namespace)" \
           upload \
-          "${UPLOAD_ARGS[@]}"
+          --parent-package "$(params.package-name)" \
+          --rpm-path "/var/workdir/results" \
+          --sbom-path "/var/workdir/results/oras-staging/sbom-merged.json" \
+          --artifact-results "$(results.PULP-IMAGE_URL.path)","$(results.PULP-IMAGE_DIGEST.path)"
+      volumeMounts:
+        - mountPath: /pulp-access
+          readOnly: true
+          name: pulp-access-credentials
+    - name: copy-to-side-tag
+      image: quay.io/redhat-user-workloads/artifact-storage-tenant/tooling/pulp-tool-container:latest@sha256:583e721a97c0d24b5d71eb23e2a0dc5f1622ebacc63a9a8ab0fb702780f21bbd
+      script: |
+        #!/usr/bin/env python3
+        """Copy RPM content from the build repo to the side tag repo."""
+        import glob
+        import hashlib
+        import json
+        import os
+        import sys
+        import time
+
+        import httpx
+
+        SIDE_TAG = "$(params.side-tag)"
+        if not SIDE_TAG:
+            print("No side tag specified, skipping")
+            sys.exit(0)
+
+        # Parse Pulp config
+        config = {}
+        config_path = "/pulp-access/cli.toml"
+        if not os.path.exists(config_path):
+            print("No Pulp credentials, skipping side tag copy")
+            sys.exit(0)
+
+        with open(config_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("["):
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip('"')
+                    config[key] = val
+
+        base_url = config["base_url"]
+        domain = config["domain"]
+        username = config["username"]
+        password = config["password"]
+        api = f"{base_url}/api/pulp/{domain}/api/v3"
+        auth = (username, password)
+
+        client = httpx.Client(auth=auth, timeout=60)
+
+        def wait_task(task_href):
+            """Wait for an async Pulp task to complete."""
+            url = f"{base_url}{task_href}" if task_href.startswith("/") else task_href
+            for _ in range(60):
+                r = client.get(url)
+                r.raise_for_status()
+                state = r.json()["state"]
+                if state == "completed":
+                    return r.json()
+                if state == "failed":
+                    print(f"Task failed: {r.json()}", file=sys.stderr)
+                    sys.exit(1)
+                time.sleep(2)
+            print("Task timed out", file=sys.stderr)
+            sys.exit(1)
+
+        # Find the side tag repo
+        r = client.get(f"{api}/repositories/rpm/rpm/", params={"name": SIDE_TAG})
+        r.raise_for_status()
+        repos = r.json()["results"]
+        if not repos:
+            print(f"ERROR: Side tag repo '{SIDE_TAG}' not found")
+            sys.exit(1)
+        sidetag_repo_href = repos[0]["pulp_href"]
+        print(f"Side tag repo: {sidetag_repo_href}")
+
+        # Find all RPM files in the results directory
+        rpm_files = []
+        for pattern in ["/var/workdir/results/*/*.rpm", "/var/workdir/results/*.rpm"]:
+            rpm_files.extend(glob.glob(pattern))
+
+        if not rpm_files:
+            print("No RPM files found, skipping side tag copy")
+            sys.exit(0)
+
+        print(f"Found {len(rpm_files)} RPM files to add to side tag")
+
+        # Upload each RPM as an artifact and create content units
+        content_hrefs = []
+        for rpm_file in rpm_files:
+            basename = os.path.basename(rpm_file)
+            # Calculate SHA256 for the file
+            sha256 = hashlib.sha256(open(rpm_file, "rb").read()).hexdigest()
+
+            # Check if artifact already exists
+            r = client.get(f"{api}/artifacts/", params={"sha256": sha256})
+            r.raise_for_status()
+            existing = r.json()["results"]
+
+            if existing:
+                artifact_href = existing[0]["pulp_href"]
+                print(f"  Artifact exists: {basename}")
+            else:
+                # Upload artifact
+                with open(rpm_file, "rb") as f:
+                    r = client.post(f"{api}/artifacts/", files={"file": (basename, f)})
+                r.raise_for_status()
+                artifact_href = r.json()["pulp_href"]
+                print(f"  Uploaded: {basename}")
+
+            # Create RPM content unit (or find existing)
+            r = client.get(f"{api}/content/rpm/packages/", params={"sha256": sha256})
+            r.raise_for_status()
+            existing_content = r.json()["results"]
+
+            if existing_content:
+                content_hrefs.append(existing_content[0]["pulp_href"])
+            else:
+                r = client.post(f"{api}/content/rpm/packages/", data={
+                    "artifact": artifact_href,
+                    "relative_path": f"Packages/{basename}",
+                })
+                r.raise_for_status()
+                resp = r.json()
+                # May be async
+                if "task" in resp:
+                    task = wait_task(resp["task"])
+                    for resource in task.get("created_resources", []):
+                        if "/content/rpm/packages/" in resource:
+                            content_hrefs.append(resource)
+                elif "pulp_href" in resp:
+                    content_hrefs.append(resp["pulp_href"])
+
+        if not content_hrefs:
+            print("No content units created, skipping modify")
+            sys.exit(0)
+
+        # Add all content units to the side tag repo
+        print(f"Adding {len(content_hrefs)} content units to side tag '{SIDE_TAG}'")
+        r = client.post(f"{base_url}{sidetag_repo_href}modify/", json={
+            "add_content_units": content_hrefs,
+        })
+        r.raise_for_status()
+        resp = r.json()
+        if "task" in resp:
+            wait_task(resp["task"])
+
+        print(f"Successfully copied {len(content_hrefs)} RPMs to side tag '{SIDE_TAG}'")
       volumeMounts:
         - mountPath: /pulp-access
           readOnly: true

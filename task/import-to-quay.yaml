@@ -200,49 +200,54 @@ spec:
       script: |
         #!/usr/bin/env bash
         jq . sbom-merged.json
-    - name: push-to-pulp
-      image: quay.io/redhat-user-workloads/artifact-storage-tenant/tooling/pulp-tool-container:latest@sha256:583e721a97c0d24b5d71eb23e2a0dc5f1622ebacc63a9a8ab0fb702780f21bbd
-      script: |
-        #!/usr/bin/env bash
-        set -e
-        : > "$(results.PULP-IMAGE_URL.path)"
-        : > "$(results.PULP-IMAGE_DIGEST.path)"
-
-        if [ ! -f /pulp-access/cli.toml ]; then
-          echo "Pulp config file does not exist; skipping push and writing empty Pulp result files"
-          exit 0
-        fi
-
-        # Standard upload to build-scoped Pulp repos
-        pulp-tool --config /pulp-access/cli.toml \
-          --build-id "$(params.pipelinerun-id)" \
-          --namespace "$(context.taskRun.namespace)" \
-          upload \
-          --parent-package "$(params.package-name)" \
-          --rpm-path "/var/workdir/results" \
-          --sbom-path "/var/workdir/results/oras-staging/sbom-merged.json" \
-          --artifact-results "$(results.PULP-IMAGE_URL.path)","$(results.PULP-IMAGE_DIGEST.path)"
-      volumeMounts:
-        - mountPath: /pulp-access
-          readOnly: true
-          name: pulp-access-credentials
-    - name: copy-to-side-tag
+    - name: push-to-pulp-and-side-tag
       image: quay.io/redhat-user-workloads/artifact-storage-tenant/tooling/pulp-tool-container:latest@sha256:583e721a97c0d24b5d71eb23e2a0dc5f1622ebacc63a9a8ab0fb702780f21bbd
       script: |
         #!/usr/bin/env python3
-        """Copy RPM content from the build repo to the side tag repo."""
+        """Upload RPMs to Pulp and copy to side tag repo if specified."""
         import glob
         import hashlib
         import json
         import os
+        import subprocess
         import sys
         import time
 
         import httpx
 
+        # Step 1: Standard pulp-tool upload
+        pulp_url_path = "$(results.PULP-IMAGE_URL.path)"
+        pulp_digest_path = "$(results.PULP-IMAGE_DIGEST.path)"
+
+        # Initialize empty results
+        with open(pulp_url_path, "w") as f:
+            f.write("")
+        with open(pulp_digest_path, "w") as f:
+            f.write("")
+
+        config_path = "/pulp-access/cli.toml"
+        if os.path.exists(config_path):
+            cmd = [
+                "pulp-tool", "--config", config_path,
+                "--build-id", "$(params.pipelinerun-id)",
+                "--namespace", "$(context.taskRun.namespace)",
+                "upload",
+                "--parent-package", "$(params.package-name)",
+                "--rpm-path", "/var/workdir/results",
+                "--sbom-path", "/var/workdir/results/oras-staging/sbom-merged.json",
+                "--artifact-results", f"{pulp_url_path},{pulp_digest_path}",
+            ]
+            print(f"Running: {' '.join(cmd)}")
+            result = subprocess.run(cmd, check=False)
+            if result.returncode != 0:
+                print(f"WARNING: pulp-tool upload failed with exit code {result.returncode}")
+        else:
+            print("Pulp config not found, skipping Pulp upload")
+
+        # Step 2: Copy to side tag if specified
         SIDE_TAG = "$(params.side-tag)"
         if not SIDE_TAG:
-            print("No side tag specified, skipping")
+            print("No side tag specified, done")
             sys.exit(0)
 
         # Parse Pulp config

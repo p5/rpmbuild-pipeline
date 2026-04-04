@@ -55,19 +55,37 @@ spec:
         PASSWORD=$(grep '^password' /pulp-access/cli.toml | sed 's/.*= *"//' | sed 's/".*//')
         DOMAIN=$(grep '^domain' /pulp-access/cli.toml | sed 's/.*= *"//' | sed 's/".*//')
 
-        # Query distribution by name
+        echo "Using Pulp at: $BASE_URL (domain: $DOMAIN, user: $USERNAME)"
+
+        # Query distribution by name - use -v for debugging
         DIST_URL="${BASE_URL}/api/pulp/${DOMAIN}/api/v3/distributions/rpm/rpm/?name=${SIDE_TAG}"
         echo "Querying: $DIST_URL"
 
-        RESPONSE=$(curl -sf -u "${USERNAME}:${PASSWORD}" "$DIST_URL")
-        COUNT=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['count'])" 2>/dev/null || echo "0")
+        HTTP_CODE=$(curl -s -o /tmp/response.json -w "%{http_code}" -u "${USERNAME}:${PASSWORD}" "$DIST_URL" 2>/tmp/curl-stderr.txt)
+        echo "HTTP status: $HTTP_CODE"
+
+        if [ -f /tmp/curl-stderr.txt ] && [ -s /tmp/curl-stderr.txt ]; then
+          echo "curl stderr:"
+          cat /tmp/curl-stderr.txt
+        fi
+
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "ERROR: Pulp API returned HTTP $HTTP_CODE"
+          cat /tmp/response.json 2>/dev/null || true
+          exit 1
+        fi
+
+        echo "Response:"
+        cat /tmp/response.json
+
+        COUNT=$(python3 -c "import json; print(json.load(open('/tmp/response.json'))['count'])" 2>/dev/null || echo "0")
 
         if [ "$COUNT" = "0" ]; then
           echo "ERROR: Side tag distribution '$SIDE_TAG' not found in Pulp domain '$DOMAIN'"
           exit 1
         fi
 
-        REPO_URL=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['results'][0]['base_url'])")
+        REPO_URL=$(python3 -c "import json; print(json.load(open('/tmp/response.json'))['results'][0]['base_url'])")
 
         echo "Side tag repository '$SIDE_TAG' validated successfully"
         echo "Distribution URL: $REPO_URL"

@@ -307,60 +307,67 @@ spec:
 
         print(f"Found {len(rpm_files)} RPM files to add to side tag")
 
-        # Upload each RPM as an artifact and create content units
-        content_hrefs = []
+        # Deduplicate RPM files by SHA256 (same RPM may appear in
+        # multiple arch directories).
+        seen_sha256 = {}
         for rpm_file in rpm_files:
-            basename = os.path.basename(rpm_file)
-            # Calculate SHA256 for the file
             sha256 = hashlib.sha256(open(rpm_file, "rb").read()).hexdigest()
+            if sha256 not in seen_sha256:
+                seen_sha256[sha256] = rpm_file
 
-            # Check if artifact already exists
-            r = client.get(f"{api}/artifacts/", params={"sha256": sha256})
-            r.raise_for_status()
-            existing = r.json()["results"]
+        print(f"  {len(seen_sha256)} unique RPMs (deduplicated from {len(rpm_files)} files)")
 
-            if existing:
-                artifact_href = existing[0]["pulp_href"]
-                print(f"  Artifact exists: {basename}")
-            else:
-                # Upload artifact
-                with open(rpm_file, "rb") as f:
-                    r = client.post(f"{api}/artifacts/", files={"file": (basename, f)})
-                r.raise_for_status()
-                artifact_href = r.json()["pulp_href"]
-                print(f"  Uploaded: {basename}")
+        # Find or create content units for each unique RPM
+        content_hrefs = set()
+        for sha256, rpm_file in seen_sha256.items():
+            basename = os.path.basename(rpm_file)
 
-            # Create RPM content unit (or find existing)
+            # Find existing content unit by SHA256
             r = client.get(f"{api}/content/rpm/packages/", params={"sha256": sha256})
             r.raise_for_status()
             existing_content = r.json()["results"]
 
             if existing_content:
-                content_hrefs.append(existing_content[0]["pulp_href"])
+                content_hrefs.add(existing_content[0]["pulp_href"])
+                print(f"  Found: {basename}")
             else:
+                # Need to upload artifact first
+                r_art = client.get(f"{api}/artifacts/", params={"sha256": sha256})
+                r_art.raise_for_status()
+                existing_art = r_art.json()["results"]
+
+                if existing_art:
+                    artifact_href = existing_art[0]["pulp_href"]
+                else:
+                    with open(rpm_file, "rb") as f:
+                        r_art = client.post(f"{api}/artifacts/", files={"file": (basename, f)})
+                    r_art.raise_for_status()
+                    artifact_href = r_art.json()["pulp_href"]
+
                 r = client.post(f"{api}/content/rpm/packages/", data={
                     "artifact": artifact_href,
                     "relative_path": f"Packages/{basename}",
                 })
                 r.raise_for_status()
                 resp = r.json()
-                # May be async
                 if "task" in resp:
                     task = wait_task(resp["task"])
                     for resource in task.get("created_resources", []):
                         if "/content/rpm/packages/" in resource:
-                            content_hrefs.append(resource)
+                            content_hrefs.add(resource)
                 elif "pulp_href" in resp:
-                    content_hrefs.append(resp["pulp_href"])
+                    content_hrefs.add(resp["pulp_href"])
+                print(f"  Created: {basename}")
 
         if not content_hrefs:
             print("No content units created, skipping modify")
             sys.exit(0)
 
-        # Add all content units to the side tag repo
-        print(f"Adding {len(content_hrefs)} content units to side tag '{SIDE_TAG}'")
+        # Add all unique content units to the side tag repo
+        content_list = sorted(content_hrefs)
+        print(f"Adding {len(content_list)} unique content units to side tag '{SIDE_TAG}'")
         r = client.post(f"{base_url}{sidetag_repo_href}modify/", json={
-            "add_content_units": content_hrefs,
+            "add_content_units": content_list,
         })
         r.raise_for_status()
         resp = r.json()

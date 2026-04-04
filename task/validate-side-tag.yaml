@@ -28,7 +28,7 @@ spec:
         as an extra repo so builds can use packages already in the side tag.
   steps:
     - name: validate
-      image: quay.io/redhat-user-workloads/artifact-storage-tenant/tooling/pulp-tool-container:latest@sha256:583e721a97c0d24b5d71eb23e2a0dc5f1622ebacc63a9a8ab0fb702780f21bbd
+      image: registry.access.redhat.com/ubi9-minimal:latest
       script: |
         #!/usr/bin/env bash
         set -e
@@ -49,10 +49,25 @@ spec:
           exit 1
         fi
 
-        # Validate the repository and retrieve its distribution URL so it can
-        # be used as a DNF repo during the build.
-        REPO_URL=$(pulp-tool --config /pulp-access/cli.toml \
-          validate-repo --name "$SIDE_TAG" --show-repo-url)
+        # Parse credentials from cli.toml
+        BASE_URL=$(grep '^base_url' /pulp-access/cli.toml | sed 's/.*= *"//' | sed 's/".*//')
+        USERNAME=$(grep '^username' /pulp-access/cli.toml | sed 's/.*= *"//' | sed 's/".*//')
+        PASSWORD=$(grep '^password' /pulp-access/cli.toml | sed 's/.*= *"//' | sed 's/".*//')
+        DOMAIN=$(grep '^domain' /pulp-access/cli.toml | sed 's/.*= *"//' | sed 's/".*//')
+
+        # Query distribution by name
+        DIST_URL="${BASE_URL}/api/pulp/${DOMAIN}/api/v3/distributions/rpm/rpm/?name=${SIDE_TAG}"
+        echo "Querying: $DIST_URL"
+
+        RESPONSE=$(curl -sf -u "${USERNAME}:${PASSWORD}" "$DIST_URL")
+        COUNT=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['count'])" 2>/dev/null || echo "0")
+
+        if [ "$COUNT" = "0" ]; then
+          echo "ERROR: Side tag distribution '$SIDE_TAG' not found in Pulp domain '$DOMAIN'"
+          exit 1
+        fi
+
+        REPO_URL=$(echo "$RESPONSE" | python3 -c "import json,sys; print(json.load(sys.stdin)['results'][0]['base_url'])")
 
         echo "Side tag repository '$SIDE_TAG' validated successfully"
         echo "Distribution URL: $REPO_URL"

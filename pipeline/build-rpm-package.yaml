@@ -179,9 +179,6 @@ spec:
     - description: ""
       name: PULP-IMAGE_DIGEST
       value: $(tasks.upload-to-quay.results.PULP-IMAGE_DIGEST)
-    - name: SIDE_TAG
-      description: The Pulp side tag repository RPMs were uploaded to (empty if none)
-      value: $(params.side-tag)
   tasks:
     - name: store-start-time
       retries: 3

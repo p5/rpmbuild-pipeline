@@ -10,7 +10,9 @@ spec:
   description: >
     Validates that the target Pulp RPM repository (side tag) exists and is
     accessible before the build proceeds.  When no side tag is specified,
-    this task is a no-op.
+    this task is a no-op.  When the side tag repo exists but has no content
+    yet (first build), the repo URL is left empty so prepare-mock-config
+    skips injecting it as a DNF repo.
   params:
     - name: side-tag
       description: >
@@ -24,8 +26,9 @@ spec:
     - name: side-tag-repo-url
       description: >
         DNF baseurl for the side tag's Pulp distribution.  Empty when no side
-        tag is specified.  Used by prepare-mock-config to inject the side tag
-        as an extra repo so builds can use packages already in the side tag.
+        tag is specified or when the side tag has no content yet (first build).
+        Used by prepare-mock-config to inject the side tag as an extra repo
+        so builds can use packages already in the side tag.
   steps:
     - name: validate
       image: registry.access.redhat.com/ubi9-minimal:latest
@@ -57,15 +60,12 @@ spec:
 
         # Query distribution by name
         DIST_URL="${BASE_URL}/api/pulp/${DOMAIN}/api/v3/distributions/rpm/rpm/?name=${SIDE_TAG}"
-        echo "Querying: $DIST_URL"
-
         RESPONSE=$(curl -sf -u "${USERNAME}:${PASSWORD}" "$DIST_URL")
         if [ $? -ne 0 ]; then
           echo "ERROR: Failed to query Pulp API"
           exit 1
         fi
 
-        # Parse count and base_url using grep/sed (no python3 dependency)
         COUNT=$(echo "$RESPONSE" | grep -o '"count":[0-9]*' | grep -o '[0-9]*')
 
         if [ "$COUNT" = "0" ] || [ -z "$COUNT" ]; then
@@ -73,18 +73,24 @@ spec:
           exit 1
         fi
 
-        # Extract base_url from first result
         REPO_URL=$(echo "$RESPONSE" | grep -o '"base_url":"[^"]*"' | head -1 | sed 's/"base_url":"//' | sed 's/"//')
+        echo "Side tag repository '$SIDE_TAG' validated successfully"
 
-        if [ -z "$REPO_URL" ]; then
-          echo "ERROR: Could not extract base_url from Pulp response"
-          exit 1
+        # Check if the repo has content by probing repomd.xml.
+        # If it's empty (first build), return empty URL so mock config
+        # doesn't try to use it as a DNF repo. The build will still upload
+        # RPMs to the side tag via the side-tag pipeline parameter.
+        REPOMD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${REPO_URL}repodata/repomd.xml")
+        if [ "$REPOMD_STATUS" = "200" ]; then
+          echo "Side tag has content, injecting as DNF repo"
+          echo "Distribution URL: $REPO_URL"
+          echo -n "$REPO_URL" > "$(results.side-tag-repo-url.path)"
+        else
+          echo "Side tag is empty (HTTP $REPOMD_STATUS for repomd.xml), skipping DNF repo injection"
+          echo -n "" > "$(results.side-tag-repo-url.path)"
         fi
 
-        echo "Side tag repository '$SIDE_TAG' validated successfully"
-        echo "Distribution URL: $REPO_URL"
         echo -n "true" > "$(results.side-tag-validated.path)"
-        echo -n "$REPO_URL" > "$(results.side-tag-repo-url.path)"
       volumeMounts:
         - mountPath: /pulp-access
           readOnly: true

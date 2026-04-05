@@ -126,7 +126,10 @@ spec:
           CONTENT_USER=$(grep -oP '^\s*username\s*=\s*"\K[^"]+' /pulp-access/cli.toml || true)
           CONTENT_PASS=$(grep -oP '^\s*password\s*=\s*"\K[^"]+' /pulp-access/cli.toml || true)
           if [ -n "$CONTENT_USER" ] && [ -n "$CONTENT_PASS" ]; then
-            printf "\nconfig_opts['yum.conf'] += \"\"\"\n[side-tag]\nusername=%s\npassword=%s\n\"\"\"\n" "$CONTENT_USER" "$CONTENT_PASS" >> "$workdir/mock.cfg"
+            # Append username/password to the existing [side-tag] section
+            # in the mock config. We use sed to insert them before the
+            # closing """ of the side-tag section.
+            sed -i "/\[side-tag\]/a username=$CONTENT_USER\npassword=$CONTENT_PASS" "$workdir/mock.cfg"
             echo "Injected Pulp content credentials into Mock config for side tag"
           fi
         fi

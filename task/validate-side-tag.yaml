@@ -80,7 +80,7 @@ spec:
         # If it's empty (first build), return empty URL so mock config
         # doesn't try to use it as a DNF repo. The build will still upload
         # RPMs to the side tag via the side-tag pipeline parameter.
-        REPOMD_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -u "${USERNAME}:${PASSWORD}" "${REPO_URL}repodata/repomd.xml")
+        REPOMD_STATUS=$(curl -sL -o /dev/null -w "%{http_code}" -u "${USERNAME}:${PASSWORD}" "${REPO_URL}repodata/repomd.xml")
         if [ "$REPOMD_STATUS" = "200" ]; then
           echo "Side tag has content, injecting as DNF repo"
           echo "Distribution URL: $REPO_URL"

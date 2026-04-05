@@ -178,7 +178,18 @@ spec:
         remote_cmd "tar xvfO '$HOMEDIR'/results/chroot_scan.tar.gz 2>&1 | cat"
         $success
 
+        # If side tag credentials are available, write a .netrc file on the
+        # remote VM so mock-hermetic-repo can download RPMs from the
+        # authenticated side tag repo.
+        NETRC_MOUNT=""
+        if [ -n "$SIDE_TAG_URL" ] && [ -f /pulp-access/cli.toml ]; then
+          PULP_HOST=$(echo "$SIDE_TAG_URL" | sed 's|https://||' | sed 's|/.*||')
+          remote_cmd bash -c "echo 'machine $PULP_HOST login $CONTENT_USER password $CONTENT_PASS' > $HOMEDIR/.netrc && chmod 600 $HOMEDIR/.netrc"
+          NETRC_MOUNT="-v $HOMEDIR/.netrc:/root/.netrc:ro"
+        fi
+
         remote_cmd podman run -v "$HOMEDIR/results:/results" \
+                              $NETRC_MOUNT \
                               --privileged --rm -ti "$mock_img" \
             mock-hermetic-repo \
             --lockfile /results/buildroot_lock.json \
